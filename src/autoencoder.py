@@ -23,14 +23,10 @@ class vae(nn.Module):
             residualBlock(32, 32),
             attentionBlock(32), 
             residualBlock(32, 32),
-            attentionBlock(32), 
-            residualBlock(32, 32),
             #nn.Linear(8 * 8 * 64, latent_dim)
         )
         self.decoder = nn.Sequential(
             #nn.Linear(latent_dim, 8 * 8 * 64),
-            residualBlock(32, 32),
-            attentionBlock(32),
             residualBlock(32, 32),
             attentionBlock(32),
             residualBlock(32, 32),
