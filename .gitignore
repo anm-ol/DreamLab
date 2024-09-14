@@ -1,0 +1,4 @@
+data/mario/*
+data/video/
+*.mp4
+weights/*
