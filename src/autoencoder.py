@@ -180,6 +180,18 @@ class vaeKL(nn.Module):
         loss += 0.001 * kl_div_loss
         return loss , out, latent
 
+class vae3d(nn.Module):
+    def __init__(self, latent_dim=128):
+        super().__init__()
+    def encode(self, x):
+        return self.encoder(x)
+    
+    def decode(self, x):
+        return self.decoder(x)
+    
+    def forward(self, x):
+        return x
+
 class PerceptualLoss(nn.Module):
     def __init__(self):
         super(PerceptualLoss, self).__init__()
@@ -203,6 +215,7 @@ def train(model, data_loader, dataset=None, lr=None, optimizer=None,
     optimizer = optimizer or torch.optim.Adam(model.parameters(), lr)
     for epoch in range(num_epochs + 1):
         for i, batch in enumerate(data_loader):
+            model.train()
             optimizer.zero_grad()
             input = batch.to(device)
             if input.dim() == 5:

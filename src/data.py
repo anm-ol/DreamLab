@@ -139,7 +139,7 @@ class videoDataset(Dataset):
         return torch.stack(frames)
 
 class marioDataset(Dataset):
-    def __init__(self, path_dir, num_frames=4, train=True, transform=None):
+    def __init__(self, path_dir, num_frames=1, train=True, transform=None):
         self.dir = os.path.join(path_dir, "train" if train else "test")
         self.num_frames = num_frames
         self.transform = transform
