@@ -3,7 +3,8 @@ import numpy as np
 
 def get_schedule(n_steps, start=0.0, end=1):
     timesteps = np.linspace(start, end, n_steps)
-    schedule = np.cos((timesteps*np.pi / (2/end) + 0.05) / 1.005)**2
+    schedule = np.cos((timesteps*np.pi / (2/end) + 0.008) / 1.008)**2
+    schedule = schedule/schedule[0]
     return schedule 
 
 def add_noise(input, alpha): # input shape : (C, H, W)
