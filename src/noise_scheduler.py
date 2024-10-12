@@ -8,7 +8,9 @@ def get_schedule(n_steps, start=0.0, end=1):
     return schedule 
 
 def add_noise(input, alpha): # input shape : (C, H, W)
-    return input*torch.sqrt(alpha) + torch.randn_like(input)*torch.sqrt(1-alpha)
+    noise = torch.randn_like(input)
+    noised_latent = input * torch.sqrt(alpha)  + noise * torch.sqrt(1-alpha)
+    return noised_latent, noise 
 
 def get_noised_data(input): # input shape : (B, C, H, W)
     n_steps = 100
