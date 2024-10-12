@@ -55,6 +55,11 @@ class DiT(nn.Module):
         self.silu = nn.SiLU()
         self.dims = dims
         self.norm = nn.LayerNorm(dims)
+        self.time_emb_layer = nn.Sequential(
+            nn.Linear(dims, dims),
+            nn.SiLU(),
+            nn.Linear(dims, dims),
+        )
         self.blocks = nn.ModuleList([DIT_block(dims) for _ in range(6)])
         self.linear = nn.Linear(dims, dims * 2)
 
@@ -70,6 +75,7 @@ class DiT(nn.Module):
         x = x + spatial_embedding
 
         noise_embedding = positional_encoding(t, self.dims).to(device).unsqueeze(0).repeat(x.size(0), 1, 1)
+        noise_embedding = self.time_emb_layer(noise_embedding)
         x = torch.concat((x, noise_embedding), dim=1)
         for block in self.blocks:
             x = block(x)
@@ -78,7 +84,8 @@ class DiT(nn.Module):
         x = x.contiguous()
         noise, var = torch.chunk(x, 2, dim=2)
         noise, var = self.patchify.unpatchify(noise), self.patchify.unpatchify(var)
-        noise = (noise + torch.randn(var.size()).to(device) * var)
+        # Uncomment this line later 
+        # noise = (noise + torch.randn(var.size()).to(device) * var)
         return noise
     
 class DIT_block(nn.Module):
