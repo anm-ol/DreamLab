@@ -5,17 +5,28 @@ import numpy as np
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
 from src.noise_scheduler import get_schedule, add_noise
+from src.linear_noise_scheduler import LinearNoiseScheduler
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def positional_encoding(t, dim, period=10000):
-    emb = torch.zeros(1, dim)
-    for i in range(0, dim, 2):
-        emb[0, i] = np.sin(t / period ** ((i) / dim))
-        emb[0, i + 1] = np.cos(t / period ** ((i) / dim))
-        
-    return torch.tensor(emb)
+def positional_encoding(ts, dim, period=10000):
+    # Ensure ts is a tensor, and reshape for broadcasting
+    ts = ts.unsqueeze(1) if ts.dim() == 1 else ts  # Shape: (batch_size, 1)
 
+    # Create a range of positions
+    position = torch.arange(0, dim, 2, dtype=torch.float32, device=ts.device)
+
+    # Compute scaling factor
+    scale = period ** (position / dim)
+    
+    # Compute sine and cosine embeddings
+    sin_emb = torch.sin(ts / scale)
+    cos_emb = torch.cos(ts / scale)
+
+    # Concatenate them along the last dimension to form positional encoding
+    emb = torch.stack((sin_emb, cos_emb), dim=-1).view(-1, dim)
+    
+    return emb
 
 class patchify(nn.Module):
     def __init__(self, patch_size):
@@ -46,23 +57,23 @@ class patchify(nn.Module):
         return x
     
 class DiT(nn.Module):
-    def __init__(self, dims=512):
+    def __init__(self, num_dit_blocks=6, patch_size=2, dims=512):
         super(DiT, self).__init__()
-        self.patchify = patchify(4)
-        self.embd = nn.Linear(512, dims)
+        input_dims = 32 * patch_size ** 2
+        self.patchify = patchify(patch_size)
+        self.embd = nn.Linear(input_dims, dims)
         self.fc1 = nn.Linear(dims, dims)
         self.fc2 = nn.Linear(dims, dims)
         self.silu = nn.SiLU()
         self.dims = dims
         self.norm = nn.LayerNorm(dims)
+        self.blocks = nn.ModuleList([DIT_block(dims) for _ in range(num_dit_blocks)])
+        self.linear = nn.Linear(dims, input_dims * 2)
         self.time_emb_layer = nn.Sequential(
             nn.Linear(dims, dims),
             nn.SiLU(),
             nn.Linear(dims, dims),
         )
-        self.blocks = nn.ModuleList([DIT_block(dims) for _ in range(6)])
-        self.linear = nn.Linear(dims, dims * 2)
-
     def forward(self, x, t): #input shape: (B, N, C, W, H)
         x = self.patchify(x)
         x = self.embd(x) 
@@ -70,11 +81,10 @@ class DiT(nn.Module):
         x = self.silu(x)
         x = self.fc2(x)
         # X shape: B, N, D
-        spatial_embedding = [positional_encoding(i, self.dims)[0] for i in range(x.size(1))]
-        spatial_embedding = torch.stack(spatial_embedding).unsqueeze(0).repeat(x.size(0), 1, 1).to(device)
-        x = x + spatial_embedding
-
-        noise_embedding = positional_encoding(t, self.dims).to(device).unsqueeze(0).repeat(x.size(0), 1, 1)
+        spatial_embedding = positional_encoding(torch.arange(x.shape[1]), self.dims)
+        spatial_embedding = spatial_embedding.repeat(x.size(0), 1, 1).to(device) # shape: B, N, D
+        x = x + spatial_embedding # shape: B, N, D
+        noise_embedding = positional_encoding(t, self.dims).unsqueeze(1).to(device) #shape: B, 1, D
         noise_embedding = self.time_emb_layer(noise_embedding)
         x = torch.concat((x, noise_embedding), dim=1)
         for block in self.blocks:
@@ -84,8 +94,8 @@ class DiT(nn.Module):
         x = x.contiguous()
         noise, var = torch.chunk(x, 2, dim=2)
         noise, var = self.patchify.unpatchify(noise), self.patchify.unpatchify(var)
-        # Uncomment this line later 
-        # noise = (noise + torch.randn(var.size()).to(device) * var)
+        var = 0 * var #removing variance for now
+        noise = (noise + torch.randn(var.size()).to(device) * var)
         return noise
     
 class DIT_block(nn.Module):
@@ -106,11 +116,13 @@ class DIT_block(nn.Module):
         x = self.linear(x)
         x += residue
         return x
-
-def train_denoiser(dit_model, vae, dataloader, num_steps=10, lr=0.0001, num_epochs=10):
+    
+def train_denoiser(dit_model, vae, dataloader, num_steps=10, lr=0.0001, num_epochs=10, scheduler='linear'):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dit_model.train()
     vae.eval()
+    if scheduler == 'linear':
+        linear = LinearNoiseScheduler(num_steps, beta_start=0.0001, beta_end=0.02)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(dit_model.parameters(), lr=lr)
     alphas = get_schedule(num_steps)
@@ -121,12 +133,21 @@ def train_denoiser(dit_model, vae, dataloader, num_steps=10, lr=0.0001, num_epoc
             input = input[:, 0].to(device)
             with torch.no_grad():
                 input = vae.encoder(input)
-            t = np.random.randint(0, num_steps - 1)
-            alpha = torch.tensor(alphas[t])
-            noised = add_noise(input, alpha).to(device)
-
+                input = (input - 2) / 3.5
+                batch_Size = input.shape[0]
+                original_noise = torch.randn_like(input).to(device)
+                if scheduler == 'cosine':
+                    t = torch.randint(0, num_steps-1, size=(batch_Size,))
+                    alpha = torch.tensor(alphas[t])
+                    alpha = alpha.reshape(-1, 1, 1, 1).to(device)
+                    noised, original_noise = add_noise(input, alpha)
+                    noised = noised.float().to(device)
+                    original_noise = original_noise.to(device)
+                elif scheduler == 'linear':
+                    t = torch.randint(0, num_steps - 1, (batch_Size,))
+                    noised = linear.add_noise(input, original_noise, t)
             optimizer.zero_grad()
-            loss = criterion(dit_model(noised, t), noised - input)
+            loss = criterion(dit_model(noised, t), original_noise)
             losses.append(loss.item())
             loss_mean = torch.tensor(losses[-40:]).mean()
             losses_mean.append(loss_mean)
@@ -139,33 +160,54 @@ def train_denoiser(dit_model, vae, dataloader, num_steps=10, lr=0.0001, num_epoc
             plt.plot(losses_mean)
             plt.show()
 
-def diffusion_denoising(vae, dit_model, num_steps=10):
+def diffusion_sampler(vae, dit_model, dataset, num_samples=1, num_steps=10, scheduler='linear'):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     vae.eval()
     dit_model.eval()
     img = dataset[0][0].unsqueeze(0).to(device)
-    latent = vae.encoder(img)
-    latent = torch.randn(latent.size()).to(device)
+    latent = vae.encoder(img).repeat(num_samples, 1, 1, 1)
+    latent = torch.randn_like(latent)
     output = vae.decoder(latent)
-    alphas = torch.tensor(get_schedule(num_steps))
+    if scheduler=='cosine':
+        alphas_cum = torch.tensor(get_schedule(num_steps)).to(device).float()
+    elif scheduler=='linear':
+        linear = LinearNoiseScheduler(num_steps, beta_start=0.0001, beta_end=0.02)
     plt.figure(figsize=(3, 3))
     plt.imshow(output[0].permute(1, 2, 0).cpu().detach().numpy())
     plt.axis('off')
     plt.show()
     time.sleep(0.1)
     with torch.no_grad():
-        for t in range(num_steps-1, -1, -1):
-            print(f'Step {t}, alpha: {alphas[t]}')
+        for t in torch.arange(num_steps-1, -1, -1):
+            t = t.repeat(num_samples)
             eps =  dit_model(latent, t)
-            sigma_t = torch.sqrt(1 - alphas[t])
-            z = torch.randn_like(latent).to(device) if t > 0 else 0
-            # denoise from z_t to z_0 but also add some noise to get z_(t-1)  [i think thats how it works] 
-            latent = (latent - torch.sqrt(1 - alphas[t]) * eps) / torch.sqrt(alphas[t]) 
-            latent = latent * torch.sqrt(alphas[t]) + sigma_t * z
-            #latent = latent - eps
-            output = vae.decoder(latent)
+            if scheduler == 'cosine':
+                #print(f'Step {t[0]}, alpha: {alphas_cum[t[0]]}')
+                t = t.reshape(-1, 1, 1, 1)
+                alpha_t = alphas_cum[t]/alphas_cum[t-1] if t[0] > 0 else alphas_cum[t]
+                alpha_t = alpha_t.to(device)
+                sigma_t = (1 - alpha_t) * (1 - alphas_cum[t-1]) / (1 - alphas_cum[t]).to(device)
+                sigma_t = sigma_t ** 0.5
+                latent = (latent - (eps * (1 - alpha_t)/torch.sqrt(1 - alphas_cum[t].to(device)))) / torch.sqrt(alpha_t) 
+                t = t.view(-1)
+            elif scheduler == 'linear':
+                sigma_t = 0
+                t = t.reshape(-1, 1, 1, 1)
+                latent, _ = linear.sample_prev_timestep(latent, eps, t)
+                t = t.view(-1)
+                            
+            if t[0] == 0:
+                latent = latent
+            else:   
+                z = torch.randn_like(latent).to(device) 
+                latent = latent + sigma_t * z
+            output = vae.decoder(latent * 3.5 + 2)
             output = torch.clamp(output, 0, 1)
-            plt.figure(figsize=(3, 3))
-            plt.imshow(output[0].permute(1, 2, 0).cpu().numpy())
-            plt.axis('off')
-            plt.show()
+            if t[0] % (num_steps//10) == 0:
+                print(f'Step {t[0]}')
+                fig, axes = plt.subplots(1, num_samples, figsize=(num_samples * 2, 2))
+                for i in range(num_samples):
+                    axes[i].imshow(output[i].permute(1, 2, 0).cpu().numpy())
+                    axes[i].axis('off')
+                plt.show()
+    return output

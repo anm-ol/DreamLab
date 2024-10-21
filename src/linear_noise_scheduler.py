@@ -60,7 +60,7 @@ class LinearNoiseScheduler:
         mean = xt - ((self.betas.to(xt.device)[t]) * noise_pred) / (self.sqrt_one_minus_alpha_cum_prod.to(xt.device)[t])
         mean = mean / torch.sqrt(self.alphas.to(xt.device)[t])
         
-        if t == 0:
+        if t.view(-1)[0] == 0:
             return mean, x0
         else:
             variance = (1 - self.alpha_cum_prod.to(xt.device)[t - 1]) / (1.0 - self.alpha_cum_prod.to(xt.device)[t])
