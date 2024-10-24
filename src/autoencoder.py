@@ -23,10 +23,12 @@ class vae(nn.Module):
             residualBlock(32, 32),
             attentionBlock(32), 
             residualBlock(32, 32),
-            #nn.Linear(8 * 8 * 64, latent_dim)
+            nn.GroupNorm(32, 32),
+            nn.SiLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(64, 64, kernel_size=1, stride=1, padding=0)
         )
         self.decoder = nn.Sequential(
-            #nn.Linear(latent_dim, 8 * 8 * 64),
             residualBlock(32, 32),
             attentionBlock(32),
             residualBlock(32, 32),
@@ -40,24 +42,24 @@ class vae(nn.Module):
             upSample(16, 3)
         )
         self.loss_func = nn.MSELoss()
-        self.bn1 = nn.BatchNorm1d(latent_dim)
-        self.drop = nn.Dropout(0.2)
 
+    def reparameterize(self, mean, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mean + eps * std
+    
     def encode(self, x):
-        return self.drop(self.encoder(x))
+        return self.encoder(x)
     def decode(self, x):
         return self.decoder(x)
     def forward(self, x):
         latent = self.encoder(x)
-        #latent = self.bn1(latent)
-        #latent = self.drop(latent)
+        mean, var = torch.chunk(latent, 2, dim=1)
+        latent = self.reparameterize(mean, var)
         out = self.decoder(latent)
-        with torch.no_grad():
-            pass
-            #reconstructed_features = self.encoder(out)
-        loss = self.loss_func(out, x) #+ perceptual_loss(latent, reconstructed_features, beta=1)
+        loss = self.loss_func(out, x)
         return loss, out, latent
-      
+    
 class VAE2(nn.Module):
     def __init__(self, latent_dim=128):
         super(VAE2, self).__init__()
