@@ -1,4 +1,6 @@
 data/mario/*
 data/video/
+data
 *.mp4
 weights/*
+src/__pycache__/*

@@ -5,6 +5,7 @@ import os
 import torch
 import cv2
 import numpy as np
+import time
 
 def empty_folder(folder):
     if not os.path.exists(folder):
@@ -69,7 +70,7 @@ def split_data(data_dir, test_split=0.2, num_frames=4):
         for file in files:
             os.rename(os.path.join(data_dir, file), os.path.join(data_dir, "test", file))
 
-def split_data2(data_dir, test_split=0.2, num_frames=4):
+def split_data2(data_dir, write_split_dir, test_split=0.2, num_frames=4):
     files = os.listdir(data_dir)
     dir_idx = []
     for i, file in enumerate(files):
@@ -90,14 +91,14 @@ def split_data2(data_dir, test_split=0.2, num_frames=4):
     test_files = file_groups[:test_size]
     train_files = file_groups[test_size:]
     
-    with open ('data/train.txt', 'w') as f:
+    with open (write_split_dir + '/train.txt', 'w') as f:
         for i, files in enumerate(train_files):
             f.write (f'{i} ')
             for file in files:
                 f.write(f'{file} ')
             f.write('\n')
     
-    with open ('data/test.txt', 'w') as f:
+    with open (write_split_dir + '/test.txt', 'w') as f:
         for i, files in enumerate(test_files):
             f.write (f'{i} ')
             for file in files:

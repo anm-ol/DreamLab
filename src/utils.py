@@ -1,4 +1,5 @@
 import torch
+import cv2
 from src.DiT import *
 
 def count_parameters(model):
@@ -13,6 +14,10 @@ def save_model_with_config(dit, path, config, vae=None):
 
     # Save to a file
     torch.save(checkpoint, path)
+
+def play_video(video_path, start_frame=0, end_frame=None):
+    # will play the video embedded in the notebook
+    pass
 
 def load_model_with_config(path):
     # Load the model's state_dict and config together

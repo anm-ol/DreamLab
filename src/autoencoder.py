@@ -57,7 +57,7 @@ class vae(nn.Module):
             #reconstructed_features = self.encoder(out)
         loss = self.loss_func(out, x) #+ perceptual_loss(latent, reconstructed_features, beta=1)
         return loss, out, latent
-    
+      
 class VAE2(nn.Module):
     def __init__(self, latent_dim=128):
         super(VAE2, self).__init__()
@@ -260,8 +260,12 @@ def sample_image(model, dataset, device=None, generator=None):
         loss, reconstructed_image, latent_space = model(random_image)
         
         # Clip the data to the valid range [0, 1]
-        random_image = torch.clamp(random_image, 0, 1)
-        reconstructed_image = torch.clamp(reconstructed_image, 0, 1)
+        min, max = random_image.min(), random_image.max()
+        range = max - min
+        random_image = (random_image - min) / range
+        min, max = reconstructed_image.min(), reconstructed_image.max()
+        range = max - min
+        reconstructed_image = (reconstructed_image - min) / range
 
         fig, axes = plt.subplots(1, 2, figsize=(5, 2.5))
         

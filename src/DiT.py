@@ -202,6 +202,8 @@ def diffusion_sampler(vae, dit_model, dataset, num_samples=1, num_steps=10, sche
                 z = torch.randn_like(latent).to(device) 
                 latent = latent + sigma_t * z
             output = vae.decoder(latent * 3.5 + 2)
+            min, max = output.min(), output.max()
+            output = (output - min) / (max - min)
             output = torch.clamp(output, 0, 1)
             if t[0] % (num_steps//10) == 0:
                 print(f'Step {t[0]}')
