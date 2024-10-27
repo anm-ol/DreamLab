@@ -14,34 +14,47 @@ class vae(nn.Module):
         self.encoder = nn.Sequential(
             downSample(3, 16, use_batchnorm=False),
             residualBlock(16, 16),
+            attentionBlock(16), 
+
             downSample(16, 16),
             residualBlock(16, 32, use_batchnorm=False),
+            attentionBlock(32), 
+
             downSample(32, 32),
             residualBlock(32, 32),
-            residualBlock(32, 32),
+            attentionBlock(32), 
+
             downSample(32, 32, use_batchnorm=False),
             residualBlock(32, 32),
             attentionBlock(32), 
             residualBlock(32, 32),
-            nn.GroupNorm(32, 32),
-            nn.SiLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.Conv2d(64, 64, kernel_size=1, stride=1, padding=0)
+            attentionBlock(32), 
+            residualBlock(32, 32),
+
         )
         self.decoder = nn.Sequential(
             residualBlock(32, 32),
             attentionBlock(32),
             residualBlock(32, 32),
-            upSample(32, 32),
+            attentionBlock(32),
             residualBlock(32, 32),
+            upSample(32, 32),
+
+            attentionBlock(32),
             residualBlock(32, 32),
             upSample(32, 32),
+
+            attentionBlock(32),
             residualBlock(32, 16, use_batchnorm=False),
             upSample(16, 16),
+
+            attentionBlock(32),
             residualBlock(16, 16),
             upSample(16, 3)
         )
-        self.loss_func = nn.MSELoss()
+        self.fc1 = nn.Linear(256, 512)
+        self.fc2 = nn.Linear(512, 512)
+        self.loss_func = nn.L1Loss()
 
     def reparameterize(self, mean, logvar):
         std = torch.exp(0.5 * logvar)
@@ -53,13 +66,22 @@ class vae(nn.Module):
     def decode(self, x):
         return self.decoder(x)
     def forward(self, x):
-        latent = self.encoder(x)
-        mean, logvar = torch.chunk(latent, 2, dim=1)
-        latent = self.reparameterize(mean, logvar)
+        latent  = self.encoder(x)
+        b, c, h, w = latent.shape
+        #mean, logvar = torch.chunk(latent, 2, dim=1)
+        #latent = self.reparameterize(mean, logvar)
+        latent = latent.view(b, c, -1)
+        latent = self.fc1(latent)
+        latent = nn.SiLU()(latent)
+        latent = self.fc2(latent)
+        mean, logvar = torch.chunk(latent, 2, dim=2)
+        latent = self.reparameterize(mean, logvar).view(b, c, h, w)
+
         out = self.decoder(latent)
+
         loss = self.loss_func(out, x)
-        kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()) / x.shape[0]
-        loss += 5e-6 * kl_loss
+        #kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()) / x.shape[0]
+        #loss += 5e-6 * kl_loss
         return loss, out, latent
 
 class Disciminator(nn.Module):
@@ -92,68 +114,103 @@ class Disciminator(nn.Module):
         return out
 
 class VAE2(nn.Module):
-    def __init__(self, latent_dim=128):
-        super(VAE2, self).__init__()
+    def __init__(self, latent_dim=32, in_channels=3, hidden_dims=[16, 32, 32]):
+        super().__init__()
         self.latent_dim = latent_dim
+        self.kl_weight = 0.001  # Beta-VAE weight
         
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=4, stride=2, padding=1),  # 64x64 -> 32x32
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1), # 32x32 -> 16x16
-            nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1), # 16x16 -> 8x8
-            nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1), # 8x8 -> 4x4
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(256*4*4, 512),
-            nn.ReLU(),
-            nn.Linear(512, 2 * latent_dim) # For mean and logvar
+        # Encoder layers
+        encoder_layers = []
+        current_channels = in_channels
+        
+        for h_dim in hidden_dims:
+            encoder_layers.extend([
+                downSample(current_channels, h_dim),
+                residualBlock(h_dim, h_dim),
+                residualBlock(h_dim, h_dim),
+                attentionBlock(h_dim)
+            ])
+            current_channels = h_dim
+            
+        self.encoder_backbone = nn.Sequential(*encoder_layers)
+        
+        # Latent space projections
+        self.mean_proj = nn.Sequential(
+            nn.Conv2d(hidden_dims[-1], latent_dim, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(latent_dim, latent_dim, 1)
         )
         
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256*4*4),
-            nn.ReLU(),
-            nn.Unflatten(1, (256, 4, 4)),
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1), # 4x4 -> 8x8
-            nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1), # 8x8 -> 16x16
-            nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1), # 16x16 -> 32x32
-            nn.ReLU(),
-            nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1),  # 32x32 -> 64x64
-            nn.Sigmoid()  # To output values between 0 and 1
+        self.logvar_proj = nn.Sequential(
+            nn.Conv2d(hidden_dims[-1], latent_dim, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(latent_dim, latent_dim, 1)
         )
-
-    def encode(self, x):
-        mean_logvar = self.encoder(x)
-        mean, logvar = torch.chunk(mean_logvar, 2, dim=1)
-        return mean, logvar
-    
+        
+        # Decoder layers
+        decoder_layers = []
+        hidden_dims.reverse()
+        current_channels = latent_dim
+        
+        for h_dim in hidden_dims:
+            decoder_layers.extend([
+                upSample(current_channels, h_dim),
+                residualBlock(h_dim, h_dim),
+                residualBlock(h_dim, h_dim),
+                attentionBlock(h_dim)
+            ])
+            current_channels = h_dim
+            
+        # Final output layer
+        decoder_layers.extend([
+            nn.Conv2d(hidden_dims[-1], in_channels, 3, padding=1),
+            nn.Tanh()  # Output in [-1, 1] range
+        ])
+        
+        self.decoder = nn.Sequential(*decoder_layers)
+        
+        # Initialize weights
+        self.apply(self._init_weights)
+        
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+                
     def reparameterize(self, mean, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mean + eps * std
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            return mean + eps * std
+        return mean
+    
+    def encode(self, x):
+        features = self.encoder_backbone(x)
+        mean = self.mean_proj(features)
+        logvar = self.logvar_proj(features)
+        return mean, logvar
     
     def decode(self, z):
         return self.decoder(z)
     
     def forward(self, x):
+
         mean, logvar = self.encode(x)
         z = self.reparameterize(mean, logvar)
         recon = self.decode(z)
-        loss = self.loss_function(recon, x, mean, logvar)
-        return loss, recon, z
-    
-    def loss_function(self, recon_x, x, mean, logvar):
-        recon_loss = F.mse_loss(recon_x, x, reduction='sum')
+        
+        recon_loss = F.l1_loss(recon, x, reduction='sum') / x.shape[0]
         kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()) / x.shape[0]
-        return recon_loss + 0.000 * kl_loss
+        total_loss = recon_loss + self.kl_weight * kl_loss
+        
+        return total_loss, recon, z
 
+    def sample(self, num_samples, device='cuda'):
+        z = torch.randn(num_samples, self.latent_dim, 8, 8).to(device)  # Adjust spatial dims as needed
+        samples = self.decode(z)
+        return samples
+    
 class vaeKL(nn.Module):
     def __init__(self, latent_dim=2048):
         super().__init__()
@@ -273,7 +330,7 @@ def train(model, data_loader, dataset=None, lr=None, optimizer=None,
             if disc_start is not None and step_count > disc_start:
                 fake_pred = discriminator(reconstructed_image)
                 fake_loss = disc_criteria(fake_pred, torch.ones_like(fake_pred).to(device))
-                loss += 0.5 * fake_loss
+                loss += 0.1 * fake_loss
             loss.backward()
             losses.append(loss.item())
             loss_mean = torch.tensor(losses[-20:-1]).mean()
