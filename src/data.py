@@ -113,12 +113,13 @@ transform = transforms.Compose([
 
 
 class videoDataset(Dataset):
-    def __init__(self, data_dir, txt_file, resolution):
+    def __init__(self, data_dir, txt_file, resolution, norm=True):
         self.data_dir = data_dir
+        transform_norm = transforms.Normalize(mean=[0, 0, 0], std=[1, 1, 1])
         self.transform = transforms.Compose([
             transforms.Resize(resolution),    # Resize images to 128x128
             transforms.ToTensor(),            # Convert images to PyTorch tensors
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+            transform_norm
         ])
         self.data = []
         with open(txt_file, 'r') as f:
@@ -136,6 +137,7 @@ class videoDataset(Dataset):
             img = Image.open(os.path.join(self.data_dir, file))
             if self.transform:
                 img = self.transform(img)
+            img = 2 * img - 1
             frames.append(img)
         return torch.stack(frames)
 

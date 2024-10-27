@@ -54,12 +54,43 @@ class vae(nn.Module):
         return self.decoder(x)
     def forward(self, x):
         latent = self.encoder(x)
-        mean, var = torch.chunk(latent, 2, dim=1)
-        latent = self.reparameterize(mean, var)
+        mean, logvar = torch.chunk(latent, 2, dim=1)
+        latent = self.reparameterize(mean, logvar)
         out = self.decoder(latent)
         loss = self.loss_func(out, x)
+        kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()) / x.shape[0]
+        loss += 5e-6 * kl_loss
         return loss, out, latent
+
+class Disciminator(nn.Module):
+    def __init__(self, im_channels=3,
+                 conv_channels=[64, 128, 256],
+                 kernels=[4,4,4,4],
+                 strides=[2,2,2,1],
+                 paddings=[1,1,1,1]):
+        super().__init__()
+        self.im_channels = im_channels
+        activation = nn.LeakyReLU(0.2)
+        layers_dim = [self.im_channels] + conv_channels + [1]
+        self.layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(layers_dim[i], layers_dim[i + 1],
+                          kernel_size=kernels[i],
+                          stride=strides[i],
+                          padding=paddings[i],
+                          bias=False if i !=0 else True),
+                nn.BatchNorm2d(layers_dim[i + 1]) if i != len(layers_dim) - 2 and i != 0 else nn.Identity(),
+                activation if i != len(layers_dim) - 2 else nn.Identity()
+            )
+            for i in range(len(layers_dim) - 1)
+        ])
     
+    def forward(self, x):
+        out = x
+        for layer in self.layers:
+            out = layer(out)
+        return out
+
 class VAE2(nn.Module):
     def __init__(self, latent_dim=128):
         super(VAE2, self).__init__()
@@ -209,39 +240,75 @@ class PerceptualLoss(nn.Module):
 
 
 def train(model, data_loader, dataset=None, lr=None, optimizer=None, 
-          device='cuda', num_epochs=100, perceptual_loss=True):
+          device='cuda', num_epochs=100, perceptual_loss=True, disc_start=None):
     losses = []
     losses_mean = []
     if perceptual_loss:
         perceptual = PerceptualLoss().to(device)
+    if disc_start is not None:
+        discriminator = Disciminator().to(device)
+        discriminator.train()
+        disc_criteria = nn.BCEWithLogitsLoss()
+        optim_disc = torch.optim.Adam(discriminator.parameters(), lr=1e-5)
     optimizer = optimizer or torch.optim.Adam(model.parameters(), lr)
+
+    step_count = 0
     for epoch in range(num_epochs + 1):
         for i, batch in enumerate(data_loader):
             model.train()
+
             optimizer.zero_grad()
+            if disc_start:
+                optim_disc.zero_grad()
+
             input = batch.to(device)
             if input.dim() == 5:
                 _, _, c, h, w = input.shape
                 input = input.view(-1, c, h, w)
             loss, reconstructed_image, _ = model(input)
             if perceptual_loss:
-                loss += perceptual(input, reconstructed_image)
+                loss += 1 * perceptual(input, reconstructed_image)
+
+            # generator loss
+            if disc_start is not None and step_count > disc_start:
+                fake_pred = discriminator(reconstructed_image)
+                fake_loss = disc_criteria(fake_pred, torch.ones_like(fake_pred).to(device))
+                loss += 0.5 * fake_loss
             loss.backward()
             losses.append(loss.item())
             loss_mean = torch.tensor(losses[-20:-1]).mean()
             losses_mean.append(loss_mean)
-            optimizer.step()
+            
+            # discriminator loss
+            if disc_start is not None and step_count > disc_start:
+                real_pred = discriminator(input)
+                real_loss = disc_criteria(real_pred, torch.ones_like(real_pred).to(device))
+                fake_pred = discriminator(reconstructed_image.detach())
+                fake_loss = disc_criteria(fake_pred, torch.zeros_like(fake_pred).to(device))
+                disc_loss = 0.5 * (real_loss + fake_loss)
+                disc_loss.backward()
+                optim_disc.step()
 
-            if i % 1000 == 0:
-                pass
-                print(f'loss: {loss_mean:.4f}, epoch: {epoch}, batch: {i}')
-                pass
+            optimizer.step()
+        
+            step_count += 1
+        
+        optimizer.step()
+        optimizer.zero_grad()
+        if disc_start:
+            optim_disc.step()
+            optim_disc.zero_grad()
+        
+        print(f'loss: {loss_mean:.4f}, epoch: {epoch}, batch: {i}')
 
         if epoch % 5 == 0:
             clear_output()
             plt.plot(losses)
             plt.plot(losses_mean)
             if dataset:
+                sample_image(model, dataset)
+                sample_image(model, dataset)
+                sample_image(model, dataset)
                 sample_image(model, dataset)
             plt.show()
     
@@ -265,9 +332,7 @@ def sample_image(model, dataset, device=None, generator=None):
         min, max = random_image.min(), random_image.max()
         range = max - min
         random_image = (random_image - min) / range
-        min, max = reconstructed_image.min(), reconstructed_image.max()
-        range = max - min
-        reconstructed_image = (reconstructed_image - min) / range
+        reconstructed_image = ((reconstructed_image + 1)/2).clamp(0, 1)
 
         fig, axes = plt.subplots(1, 2, figsize=(5, 2.5))
         
